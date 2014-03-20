@@ -23,6 +23,7 @@ import (
 	"sync/atomic"
 )
 
+// QueuebMessageError is returned to sender if delivery does not occur.
 // When an error occurs the callers receives a QueuebMessage and Message is set
 // to QueuebMessageError.  The original Messages is returned as the Message in
 // QueuebMessageError.  The sender is responsible for adding identification of
@@ -32,10 +33,11 @@ type QueuebMessageError struct {
 	Message interface{} // original message
 }
 
-// All messages past around are of type QueuebMessage.  The sender is
-// responsible for filling out From, To and Message.
+// QueuebMessage is the generic wrapper used to send messages around subsystems.
+// All messages passed around are of type QueuebMessage.
+//The sender is responsible for filling out From, To and Message.
 // Message is of type interface{} so the sender has flexibility in what to
-// send around.
+// send.
 // It is recommended to have an identifier in the Message in case one needs
 // to deal with errors.
 type QueuebMessage struct {
@@ -120,7 +122,7 @@ type Queueb struct {
 	queuebs map[string]*queuebChannelPair // registered queues
 }
 
-// Allocate a new Queueb context.
+// New allocates a Queueb context.
 // Name is a human readable string to identify the context.
 // It is not used in the package.
 // The depth parameter indicates how many messages can be outstanding before
@@ -189,7 +191,7 @@ func (q *Queueb) findQueuebChannelPair(name string) (*queuebChannelPair, error) 
 	return qcp, nil
 }
 
-// Return number of queuebs currently registered.
+// Len returns the number currently registered queuebs.
 func (q *Queueb) Len() int {
 	q.queuebsMtx.RLock()
 	defer q.queuebsMtx.RUnlock()
@@ -313,7 +315,8 @@ func (q *Queueb) Register(name string, priority int) error {
 	return nil
 }
 
-// Immediately destroy the named queueb and remove it from the context.
+// Unregister immediately destroys the named queueb and removes it from the
+// context.
 // Messages will no longer be routed and the queueb is NOT drained.
 func (q *Queueb) Unregister(name string) {
 	q.queuebsMtx.Lock()
