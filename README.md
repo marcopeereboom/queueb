@@ -1,4 +1,4 @@
-queuebs
+queueb
 =======
 
 Package queueb (pronounced cube) is a priority queue based messaging system.
