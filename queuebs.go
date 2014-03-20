@@ -23,28 +23,43 @@ import (
 	"sync/atomic"
 )
 
+// When an error occurs the callers receives a QueuebMessage and Message is set
+// to QueuebMessageError.  The original Messages is returned as the Message in
+// QueuebMessageError.  The sender is responsible for adding identification of
+// the original Message, if need be.
 type QueuebMessageError struct {
 	Error   error       // error
 	Message interface{} // original message
 }
 
+// All messages past around are of type QueuebMessage.  The sender is
+// responsible for filling out From, To and Message.
+// Message is of type interface{} so the sender has flexibility in what to
+// send around.
+// It is recommended to have an identifier in the Message in case one needs
+// to deal with errors.
 type QueuebMessage struct {
 	From    string      // From queue
 	To      []string    // To queue
 	Message interface{} // Queueb agnostic message that is passed around
 
-	counter  uint64 // running counter to keep same prio in order
-	priority int    // message priority, inherented from QueuebChannelPair
+	counter  uint64 // running counter to keep same prio in FIFO order
+	priority int    // message priority, inherented from queuebChannelPair
 }
 
-// implement heap.Interface
-type PriorityQueue []*QueuebMessage
+// priorityQueue implements the heap interface.
+type priorityQueue []*QueuebMessage
 
-func (pq PriorityQueue) Len() int {
+// Implement Len, required by the heap interface.
+func (pq priorityQueue) Len() int {
 	return len(pq)
 }
 
-func (pq PriorityQueue) Less(i, j int) bool {
+// Implement Less, required by the heap interface.
+// Note that this Less function has two sorting fields.
+// The idea is to keep same priority messages in order while higher priority
+// messages get pushed in front of lower priority ones.
+func (pq priorityQueue) Less(i, j int) bool {
 	if pq[i].priority == pq[j].priority {
 		return pq[i].counter < pq[j].counter
 	}
@@ -52,15 +67,18 @@ func (pq PriorityQueue) Less(i, j int) bool {
 	return pq[i].priority > pq[j].priority
 }
 
-func (pq PriorityQueue) Swap(i, j int) {
+// Implement Swap, required by the heap interface.
+func (pq priorityQueue) Swap(i, j int) {
 	pq[i], pq[j] = pq[j], pq[i]
 }
 
-func (pq *PriorityQueue) Push(x interface{}) {
+// Implement Push, required by the heap interface.
+func (pq *priorityQueue) Push(x interface{}) {
 	*pq = append(*pq, x.(*QueuebMessage))
 }
 
-func (pq *PriorityQueue) Pop() interface{} {
+// Implement Pop, required by the heap interface.
+func (pq *priorityQueue) Pop() interface{} {
 	old := *pq
 	n := len(old)
 	x := old[n-1]
@@ -68,34 +86,53 @@ func (pq *PriorityQueue) Pop() interface{} {
 	return x
 }
 
-type QueuebChannelPair struct {
-	stopped  int32          // in the process of stopping
+// The queuebChannelPair strucutre is used internally to represent a subsytem.
+// Each subsystem has bidirectional communication channels.
+type queuebChannelPair struct {
+	stopped  int32          // channel pair in the process of stopping
 	wg       sync.WaitGroup // wait until done stopping
-	priority int
+	priority int            // priority of this channel pair
 
 	From chan *QueuebMessage // incomming channel
 	To   chan *QueuebMessage // outgoing channel
 	Name string              // queue name
 }
 
+// The Queueb (pronounced cube) type is a context for N queuebChannelPairs.
+// Messages can be exchanged between queuebChannelPairs, a.k.a. subsystems.
+// Under normal use messages are sent directly to the other subsystem however,
+// if the pending counter reaches depth the messages are pushed onto a
+// priority queue.
+// The higher the priority of the queue the earlier their messages get processed.
+// Once a message gets delivered the highest priority messages is popped of the
+// queue and is sent.
+// This process continues until the queue is fully drained.
+// Name is only used for human readability of various contexts.
 type Queueb struct {
-	Name    string                        // queue context name
-	Queuebs map[string]*QueuebChannelPair // registered queues
+	Name string // queue context name
 
-	pq         *PriorityQueue // used to handle overflow messages
+	pq         *priorityQueue // used to handle overflow messages
 	depth      uint           // depth of sink before queueing
 	pending    uint           // number of outstanding messages
-	counter    uint64         //running counter
-	queuebsMtx sync.RWMutex   // mutex for Queuebs
+	counter    uint64         // running counter, yep it can overflow
+	queuebsMtx sync.RWMutex   // mutex for queuebs
+
+	queuebs map[string]*queuebChannelPair // registered queues
 }
 
 // Allocate a new Queueb context.
+// Name is a human readable string to identify the context.
+// It is not used in the package.
+// The depth parameter indicates how many messages can be outstanding before
+// messages are going to be pushed onto the priority queue.
+// Note that depth measures From messages only; this means that if there are
+// M recipients for the message it only counts once.
 func New(name string, depth uint) (*Queueb, error) {
 	q := Queueb{
 		Name:    name,
-		Queuebs: make(map[string]*QueuebChannelPair),
+		queuebs: make(map[string]*queuebChannelPair),
 		depth:   depth,
-		pq:      &PriorityQueue{},
+		pq:      &priorityQueue{},
 	}
 
 	heap.Init(q.pq)
@@ -103,23 +140,25 @@ func New(name string, depth uint) (*Queueb, error) {
 	return &q, nil
 }
 
-// Route message to recipients.
-func (q *Queueb) queuebMessageRoute(qcp *QueuebChannelPair, m *QueuebMessage, done chan bool) {
+// Route message to recipients as they come in.
+// This function must be called as a go routine without the mutex held.
+func (q *Queueb) queuebMessageRoute(qcp *queuebChannelPair, m *QueuebMessage,
+	done chan bool) {
 	q.queuebsMtx.RLock()
 	defer q.queuebsMtx.RUnlock()
 
 	for _, v := range m.To {
-		to, found := q.Queuebs[v]
+		to, found := q.queuebs[v]
 		if found {
 			to.To <- m
 			continue
 		}
 
 		// route error back to caller
-		to, found = q.Queuebs[m.From]
+		to, found = q.queuebs[m.From]
 		if found {
 			// reuse m
-			e := QueuebMessageError{
+			e := &QueuebMessageError{
 				Error: fmt.Errorf("could not deliver "+
 					"message to %v", v),
 				Message: m,
@@ -135,21 +174,30 @@ func (q *Queueb) queuebMessageRoute(qcp *QueuebChannelPair, m *QueuebMessage, do
 	done <- true // signal caller
 }
 
-// Mutex must be held
-func (q *Queueb) findQueuebChannelPair(name string) (*QueuebChannelPair, error) {
-	qcp, found := q.Queuebs[name]
+// Find the named queue.
+// Mutex must be held when calling this function.
+func (q *Queueb) findQueuebChannelPair(name string) (*queuebChannelPair, error) {
+	qcp, found := q.queuebs[name]
 	if !found {
-		return nil, fmt.Errorf("queue not found: %v", name)
+		return nil, fmt.Errorf("queueb not found: %v", name)
 	}
 
 	if atomic.LoadInt32(&qcp.stopped) != 0 {
-		return nil, fmt.Errorf("queue stopped: %v", name)
+		return nil, fmt.Errorf("queueb stopped: %v", name)
 	}
 
 	return qcp, nil
 }
 
-// Send message from "name" to "to" string array.
+// Return number of queuebs currently registered.
+func (q *Queueb) Len() int {
+	q.queuebsMtx.RLock()
+	defer q.queuebsMtx.RUnlock()
+	return len(q.queuebs)
+}
+
+// Send message "msg" from "name" queueb to "to" queuebs.
+// This function is non blocking.
 func (q *Queueb) Send(name string, to []string, msg interface{}) error {
 	m := QueuebMessage{
 		From:    name,
@@ -165,14 +213,15 @@ func (q *Queueb) Send(name string, to []string, msg interface{}) error {
 		return err
 	}
 
-	m.priority = qcp.priority // set priority based on QueuebChannelPair
+	m.priority = qcp.priority // set priority based on queuebChannelPair
 
 	qcp.From <- &m
 
 	return nil
 }
 
-// Blocking receive message from "name" queue.
+// Receive message from "name" queueb.
+// This function is blocks.
 func (q *Queueb) Receive(name string) (*QueuebMessage, error) {
 	q.queuebsMtx.RLock()
 	qcp, err := q.findQueuebChannelPair(name)
@@ -190,10 +239,22 @@ func (q *Queueb) Receive(name string) (*QueuebMessage, error) {
 	return m, nil
 }
 
-// Register new queuw named "name" with a priority.
-// Higher priority number means higher priority.
+// This function determines if the received messages was a QueuebMessageError.
+// If it is a QueuebMessageError then return the embedded error.
+func (qm *QueuebMessage) Error() error {
+	m, ok := qm.Message.(*QueuebMessageError)
+	if !ok {
+		return nil
+	}
+	return m.Error
+}
+
+// Register new queueb named "name" with priority "priority".
+// Higher priority queuebs are handled before lower priority ones until fully
+// drained.
+// The queueb name MUST be unique and is used to identify the queueb.
 func (q *Queueb) Register(name string, priority int) error {
-	qcp := QueuebChannelPair{
+	qcp := queuebChannelPair{
 		Name:     name,
 		From:     make(chan *QueuebMessage),
 		To:       make(chan *QueuebMessage),
@@ -203,11 +264,11 @@ func (q *Queueb) Register(name string, priority int) error {
 	q.queuebsMtx.Lock()
 	defer q.queuebsMtx.Unlock()
 
-	_, found := q.Queuebs[name]
+	_, found := q.queuebs[name]
 	if found {
 		return fmt.Errorf("queue already exists: %v", name)
 	}
-	q.Queuebs[name] = &qcp
+	q.queuebs[name] = &qcp
 
 	qcp.wg.Add(1)
 	go func() {
@@ -252,6 +313,8 @@ func (q *Queueb) Register(name string, priority int) error {
 	return nil
 }
 
+// Immediately destroy the named queueb and remove it from the context.
+// Messages will no longer be routed and the queueb is NOT drained.
 func (q *Queueb) Unregister(name string) {
 	q.queuebsMtx.Lock()
 	defer q.queuebsMtx.Unlock()
@@ -268,5 +331,5 @@ func (q *Queueb) Unregister(name string) {
 	close(qcp.From)
 	defer qcp.wg.Wait()
 	close(qcp.To)
-	delete(q.Queuebs, name)
+	delete(q.queuebs, name)
 }

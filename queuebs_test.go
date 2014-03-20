@@ -28,9 +28,7 @@ const (
 )
 
 var (
-	q       *Queueb
-	audio   *QueuebChannelPair
-	network *QueuebChannelPair
+	q *Queueb
 )
 
 func TestQueueb(t *testing.T) {
@@ -55,8 +53,15 @@ func TestQueueb(t *testing.T) {
 	}
 
 	q.Unregister("subsystem")
-	if len(q.Queuebs) != 0 {
+	if q.Len() != 0 {
 		t.Error("invalid QueuebChannelPair count")
+		return
+	}
+
+	// should fail
+	q.Unregister("subsystem")
+	if err == nil {
+		t.Error("QueuebChannelPair should not exist")
 		return
 	}
 }
@@ -85,6 +90,10 @@ func TestQueuebMessage(t *testing.T) {
 		t.Error(err)
 		return
 	}
+	if m.Error() != nil {
+		t.Error("unexpected error message")
+		return
+	}
 
 	if m.Message.(string) != "Hello world!" {
 		t.Error("invalid message")
@@ -105,6 +114,31 @@ func TestQueuebMessage(t *testing.T) {
 		t.Error("receive should have failed")
 		return
 	}
+
+	err = q.Send(Network, []string{Audio}, "Hello world!")
+	if err != nil {
+		t.Error("source queue should exist")
+		return
+	}
+	m, err = q.Receive(Network)
+	// get error
+	if err != nil {
+		t.Error("receive error failed")
+		return
+	}
+
+	// should fail
+	if m.Error() == nil {
+		t.Error("not an error message")
+		return
+	}
+
+	mm, ok := m.Message.(*QueuebMessageError)
+	if !ok {
+		t.Error("could not type assert m")
+		return
+	}
+	t.Log(mm.Error)
 }
 
 func TestQueuebPrioQueueSamePrio(t *testing.T) {
@@ -125,6 +159,10 @@ func TestQueuebPrioQueueSamePrio(t *testing.T) {
 		m, err := q.Receive(Network)
 		if err != nil {
 			t.Error(err)
+			return
+		}
+		if m.Error() != nil {
+			t.Error("unexpected error message")
 			return
 		}
 		t.Log("got %v expected %v", m.Message, fmt.Sprintf("%v", i))
@@ -151,7 +189,6 @@ func TestQueuebPrioQueueDifferentPrio(t *testing.T) {
 		}
 	}
 
-
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
@@ -160,6 +197,10 @@ func TestQueuebPrioQueueDifferentPrio(t *testing.T) {
 			m, err := q.Receive(Network)
 			if err != nil {
 				t.Error(err)
+				return
+			}
+			if m.Error() != nil {
+				t.Error("unexpected error message")
 				return
 			}
 			t.Log("got %v expected %v", m.Message, fmt.Sprintf("%v", i))
@@ -177,6 +218,10 @@ func TestQueuebPrioQueueDifferentPrio(t *testing.T) {
 			m, err := q.Receive(Audio)
 			if err != nil {
 				t.Error(err)
+				return
+			}
+			if m.Error() != nil {
+				t.Error("unexpected error message")
 				return
 			}
 			t.Log("got %v expected %v", m.Message, fmt.Sprintf("%v", i))
