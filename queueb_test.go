@@ -251,5 +251,5 @@ func BenchmarkRoundTrip(b *testing.B) {
 		}
 	}
 	end := time.Now()
-	b.Logf("Roundtrip: %v", end.Sub(start)/10000)
+	b.Logf("Roundtrip: %v", end.Sub(start)/time.Duration(count))
 }
