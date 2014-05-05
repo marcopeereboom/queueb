@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 )
 
 const (
@@ -232,4 +233,23 @@ func TestQueuebPrioQueueDifferentPrio(t *testing.T) {
 		}
 	}()
 	wg.Wait()
+}
+
+func BenchmarkRoundTrip(b *testing.B) {
+	count := 10000
+	start := time.Now()
+	for i := 0; i < count; i++ {
+		err := q.Send(Audio, []string{Network}, "a")
+		if err != nil {
+			b.Error(err)
+			return
+		}
+		_, err = q.Receive(Network)
+		if err != nil {
+			b.Error(err)
+			return
+		}
+	}
+	end := time.Now()
+	b.Logf("Roundtrip: %v", end.Sub(start)/10000)
 }
