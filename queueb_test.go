@@ -142,13 +142,40 @@ func TestQueuebMessage(t *testing.T) {
 	t.Log(mm.Error)
 }
 
-func TestQueuebPrioQueueSamePrio(t *testing.T) {
+func TestQueuebMessageTagged(t *testing.T) {
 	err := q.Register(Audio, 10)
 	if err != nil {
 		t.Error(err)
 		return
 	}
 
+	err = q.SendTagged(Audio, "mytag", []string{Network}, "Hello world!")
+	if err != nil {
+		t.Error(err)
+		return
+	}
+
+	m, err := q.Receive(Network)
+	if err != nil {
+		t.Error(err)
+		return
+	}
+	if m.Error() != nil {
+		t.Error("unexpected error message")
+		return
+	}
+
+	if m.Message.(string) != "Hello world!" {
+		t.Error("invalid message")
+		return
+	}
+	if m.Tag != "mytag" {
+		t.Error("invalid tag")
+		return
+	}
+}
+
+func TestQueuebPrioQueueSamePrio(t *testing.T) {
 	for i := 0; i < 15; i++ {
 		err := q.Send(Audio, []string{Network}, fmt.Sprintf("%v", i))
 		if err != nil {

@@ -23,6 +23,10 @@ import (
 	"sync/atomic"
 )
 
+const (
+	AnonTag = "anonymous"
+)
+
 // QueuebMessageError is returned to sender if delivery does not occur.
 // When an error occurs the callers receives a QueuebMessage and Message is set
 // to QueuebMessageError.  The original Messages is returned as the Message in
@@ -35,7 +39,9 @@ type QueuebMessageError struct {
 
 // QueuebMessage is the generic wrapper used to send messages around subsystems.
 // All messages passed around are of type QueuebMessage.
-//The sender is responsible for filling out From, To and Message.
+// The sender is responsible for filling out From, To and Message.
+// Tag is sent depending on which Send function is called.
+// The Tag field is for the caller to be able to add an id of sorts to messages.
 // Message is of type interface{} so the sender has flexibility in what to
 // send.
 // It is recommended to have an identifier in the Message in case one needs
@@ -44,6 +50,7 @@ type QueuebMessage struct {
 	From    string      // From queue
 	To      []string    // To queue
 	Message interface{} // Queueb agnostic message that is passed around
+	Tag     string      // User specified tag, used for identification
 
 	counter  uint64 // running counter to keep same prio in FIFO order
 	priority int    // message priority, inherented from queuebChannelPair
@@ -191,19 +198,12 @@ func (q *Queueb) findQueuebChannelPair(name string) (*queuebChannelPair, error) 
 	return qcp, nil
 }
 
-// Len returns the number currently registered queuebs.
-func (q *Queueb) Len() int {
-	q.queuebsMtx.RLock()
-	defer q.queuebsMtx.RUnlock()
-	return len(q.queuebs)
-}
-
-// Send message "msg" from "name" queueb to "to" queuebs.
-// This function is non blocking.
-func (q *Queueb) Send(name string, to []string, msg interface{}) error {
+// generic send routine.
+func (q *Queueb) send(name, tag string, to []string, msg interface{}) error {
 	m := QueuebMessage{
 		From:    name,
 		To:      to,
+		Tag:     tag,
 		Message: msg,
 	}
 
@@ -220,6 +220,26 @@ func (q *Queueb) Send(name string, to []string, msg interface{}) error {
 	qcp.From <- &m
 
 	return nil
+}
+
+// Len returns the number currently registered queuebs.
+func (q *Queueb) Len() int {
+	q.queuebsMtx.RLock()
+	defer q.queuebsMtx.RUnlock()
+	return len(q.queuebs)
+}
+
+// Send message "msg" from "name" queueb to "to" queuebs.
+// This function is non blocking.
+func (q *Queueb) Send(name string, to []string, msg interface{}) error {
+	return q.send(name, AnonTag, to, msg)
+}
+
+// Send message "msg" from "name" queueb to "to" queuebs with tag.
+// This function is non blocking.
+func (q *Queueb) SendTagged(name, tag string, to []string,
+	msg interface{}) error {
+	return q.send(name, tag, to, msg)
 }
 
 // Receive message from "name" queueb.
