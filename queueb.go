@@ -125,6 +125,7 @@ type Queueb struct {
 	pending    uint           // number of outstanding messages
 	counter    uint64         // running counter, yep it can overflow
 	queuebsMtx sync.RWMutex   // mutex for queuebs
+	dataMtx    sync.Mutex     // mutex for fields in Queueb
 
 	queuebs map[string]*queuebChannelPair // registered queues
 }
@@ -303,6 +304,7 @@ func (q *Queueb) Register(name string, priority int) error {
 					// disconnected.
 					return
 				}
+				q.dataMtx.Lock()
 				if q.pending < q.depth {
 					// sink
 					q.pending++
@@ -313,11 +315,13 @@ func (q *Queueb) Register(name string, priority int) error {
 					q.counter++
 					heap.Push(q.pq, m)
 				}
+				q.dataMtx.Unlock()
 			case _, ok := <-done:
 				if !ok {
 					// disconnected.
 					return
 				}
+				q.dataMtx.Lock()
 				q.pending--
 				if q.pq.Len() > 0 {
 					// start sinking from priority queue
@@ -328,6 +332,7 @@ func (q *Queueb) Register(name string, priority int) error {
 					q.pending++
 					go q.queuebMessageRoute(&qcp, m, done)
 				}
+				q.dataMtx.Unlock()
 			}
 		}
 	}()
